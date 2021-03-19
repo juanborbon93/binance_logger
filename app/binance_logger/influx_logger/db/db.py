@@ -73,6 +73,8 @@ class DB(BaseModel):
             bucket = Bucket(**bucket_dict)
             return bucket
         return None
+    # def write_points(self,points):
+    #     self._client.write_points(points)
     def get_data(self,bucket_name,fields:List[str]=None,start=None,stop=None,tags:Dict[str,str]=None,average_over:str=None,as_dataframe:bool=False):
         if isinstance(start,datetime):
             start = int(datetime.timestamp(start))

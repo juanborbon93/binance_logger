@@ -2,7 +2,7 @@ from pydantic import BaseModel,validate_arguments
 from binance.client import Client
 from typing import Dict,List
 import os
-from time import time
+from time import time,time_ns
 import multiprocessing
 from .influx_logger import DB
 
@@ -62,18 +62,16 @@ class Pair(BaseModel):
 
 
 class CryptoMarket:
-    def __init__(self,binance_api_key=None,binance_api_secre=None,quote_asset:str="USDT"):
+    def __init__(self,binance_api_key=None,binance_api_secret=None,quote_asset:str="USDT",db:DB=None):
+        if binance_api_key is not None:
+            os.environ["BINANCE_API_KEY"] = binance_api_key
+        if binance_api_secret is not None:
+            os.environ["BINANCE_API_SECRET"] = binance_api_secret
         self.quote_asset = quote_asset
-        self.client = create_binance_client()
-        t = time()
+        self.client = create_binance_client(binance_api_key,binance_api_secret)
         self.update_pairs()
-        print(f'took {time()-t} seconds to get pairs info')
-        t = time()
         self.update_pairs_prices()
-        print(f'took {time()-t} seconds to get price info')
-        t = time()
-        self.update_pairs_klines()
-        print(f'took {time()-t} seconds to get kline info')
+        # self.update_pairs_klines()
     def update_pairs(self):
         exchange_info =  self.client.get_exchange_info()
         self.pairs = {}
@@ -92,3 +90,21 @@ class CryptoMarket:
         outputs = pool.imap(get_pair_kline,kline_pair_symbols)
         for (pair_symbol,kline_data) in outputs:
             self.pairs[pair_symbol].update_kline(kline_data)
+    def record_price_data(self,db:DB,bucket_name):
+        points = []
+        for pair in self.pairs.values():
+            pair_dict = pair.dict()
+            tags = {key:val for key,val in pair_dict.items() if key not in ["price","kline"]}
+            point = {
+                "measurement":"price",
+                "tags":tags,
+                "fields":pair_dict['price'],
+                "time":time_ns()
+            }
+            points.append(point)
+
+        db._write_client.write(
+            bucket_name,
+            db.org,
+            points
+        )

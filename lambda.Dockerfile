@@ -4,6 +4,6 @@ RUN /var/lang/bin/python3.7 -m pip install --upgrade pip
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY app/ .
+COPY app/ /var/task/
 
-CMD ["index.handler"]
+CMD ["price.handler"]
