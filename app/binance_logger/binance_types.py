@@ -5,6 +5,7 @@ import os
 from time import time,time_ns
 import multiprocessing
 from .influx_logger import DB
+from datetime import datetime
 
 def create_binance_client(api_key=None,api_secret=None):
     if api_key is None:
@@ -36,8 +37,9 @@ class Kline(BaseModel):
 
 def get_pair_kline(pair_name):
     client = create_binance_client()
-    k = client.get_klines(symbol=pair_name,interval=client.KLINE_INTERVAL_1MINUTE,limit=1)
-    return (pair_name,k)
+    k = client.get_klines(symbol=pair_name,interval=client.KLINE_INTERVAL_1MINUTE,limit=6)
+    klines = [Kline.parse_obj(dict(zip(Kline.__fields__.keys(),i))) for i in k]
+    return (pair_name,klines)
 
 
 
@@ -46,19 +48,23 @@ class Pair(BaseModel):
     baseAsset:str
     quoteAsset:str
     price:Price=None
-    kline:Kline=None
+    kline:List[Kline]=None
 
-    def update_kline(self,kline_data):
-        updated = False
-        for k in kline_data:
-            kline_dict = dict(zip(Kline.__fields__.keys(),k))
-            if self.kline is None:
-                self.kline = Kline.parse_obj(kline_dict)
-                updated=True
-            if k[0]>self.kline.openTime:
-                self.kline = Kline.parse_obj(kline_dict)
-                updated=True
-        return updated
+    def get_last_recorded_kline_time(self,db):
+        if self.kline is not None:
+            query=f"""from(bucket: "crypto_market")
+                |> range(start: -25m)
+                |> filter(fn: (r) => r["_measurement"] == "kline")
+                |> filter(fn: (r) => r["symbol"] == "{self.symbol}")
+                |> last()"""
+            query_result = db.query_api.query(query)
+            times = []
+            for table in query_result:
+                for entry in table:
+                    times.append(entry.get_time())
+            if len(times)>0:
+                return max(times)
+
 
 
 class CryptoMarket:
@@ -87,9 +93,9 @@ class CryptoMarket:
     def update_pairs_klines(self):
         kline_pair_symbols = [s for s in self.pairs if s.endswith(self.quote_asset)]
         pool = multiprocessing.Pool()
-        outputs = pool.imap(get_pair_kline,kline_pair_symbols)
-        for (pair_symbol,kline_data) in outputs:
-            self.pairs[pair_symbol].update_kline(kline_data)
+        output = pool.map(get_pair_kline,kline_pair_symbols)
+        for pair_symbol,klines in output:
+            self.pairs[pair_symbol].kline = klines 
     def record_price_data(self,db:DB,bucket_name):
         points = []
         for pair in self.pairs.values():
@@ -108,3 +114,21 @@ class CryptoMarket:
             db.org,
             points
         )
+    def record_kline_data(self,db,bucket_name):
+        points = []
+        for pair in self.pairs.values():
+            if isinstance(pair.kline,list) and len(pair.kline)>0:
+                last_time = pair.get_last_recorded_kline_time(db)
+                pair_dict = pair.dict()
+                tags = {key:val for key,val in pair_dict.items() if key not in ["price","kline"]}
+                for k in pair.kline:
+                    point_datetime = datetime.fromtimestamp(k.closeTime/1000)
+                    if last_time is None or point_datetime.timestamp()>last_time.timestamp():
+                        point = {
+                            "measurement":"kline",
+                            "tags":tags,
+                            "fields":{key:val for key,val in k.dict().items() if key not in ["openTime","closeTime"]},
+                            "time":k.closeTime
+                        }
+                        points.append(point)
+        db._write_client.write(bucket_name,db.org,points,'ms')

@@ -106,7 +106,7 @@ class DB(BaseModel):
         records_dict = {}
         times = []
         for table in result:
-            print(table)
+            # print(table)
             for record in table.records:
                 value = record.get_value()
                 field = record.get_field()
